@@ -7,10 +7,13 @@ import { consolidate } from './consolidate.js';
 import { InputError } from './errors.js';
 import type { Method } from './lines.js';
 import { parseReceipts } from './receipts.js';
+import { parseOriginal, refundNote, refundSummaryJson, refundTextReport, type OriginalDocument } from './refund.js';
 import { documentFile, summaryJson, textReport } from './report.js';
 import { parseSupplier } from './supplier.js';
 
 const USAGE = `Usage: myinvois-consolidate build <receipts.csv> --supplier <supplier.json> --month YYYY-MM [options]
+       myinvois-consolidate refund-note <refunds.csv> --supplier <supplier.json> --month YYYY-MM
+                            (--original <CONS-....json> | --original-id <ID>) --original-uuid <UUID> [options]
 
 Builds monthly consolidated e-Invoices (buyer "General Public", TIN EI00000000010, classification 004)
 from B2C receipts, as unsigned MyInvois UBL 2.1 JSON or XML (v1.0). Offline; never submits anything.
@@ -26,6 +29,15 @@ Options:
   --out <dir>           write <ID>.json or <ID>.xml per document and summary.json (refuses to overwrite)
   --json                print the summary as JSON
   -h, --help            show this help
+
+refund-note: one unsigned Refund Note (type 04) against a validated consolidated e-Invoice, for receipts refunded
+after it was submitted. refunds.csv has the receipts CSV columns; date is the original receipt date, amounts are the
+refunded amounts. One line per refunded receipt.
+  --original <file>     the consolidated e-Invoice JSON written by build (checks supplier, month and amount)
+  --original-id <ID>    its ID instead, when the JSON is not at hand (no checks)
+  --original-uuid <UUID>  the UUID MyInvois returned when it validated the consolidated e-Invoice
+  --id <text>           refund note ID (default RN-<original ID>)
+  --issued-at, --format, --out, --json as for build (--out writes <ID>.json or <ID>.xml)
 
 Exit codes: 0 ok, 1 documents do not reconcile with receipts, 2 input error.
 `;
@@ -46,6 +58,10 @@ export function main(argv: string[]): number {
         'issued-at': { type: 'string' },
         format: { type: 'string', default: 'json' },
         out: { type: 'string' },
+        original: { type: 'string' },
+        'original-id': { type: 'string' },
+        'original-uuid': { type: 'string' },
+        id: { type: 'string' },
         json: { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
       },
@@ -59,14 +75,19 @@ export function main(argv: string[]): number {
     return 0;
   }
   try {
-    if (positionals[0] !== 'build' || positionals.length !== 2) {
-      throw new InputError('expected: build <receipts.csv>');
+    const command = positionals[0];
+    if ((command !== 'build' && command !== 'refund-note') || positionals.length !== 2) {
+      throw new InputError('expected: build <receipts.csv> or refund-note <refunds.csv>');
+    }
+    const refundOnly = ['original', 'original-id', 'original-uuid', 'id'] as const;
+    if (command === 'build' && refundOnly.some((name) => values[name] !== undefined)) {
+      throw new InputError('--original, --original-id, --original-uuid and --id are for refund-note only.');
+    }
+    if (command === 'refund-note' && (values['by-branch'] || values.prefix !== undefined || argv.some((a) => a === '--method' || a.startsWith('--method=')))) {
+      throw new InputError('--method, --by-branch and --prefix are for build only (a refund note has one line per refunded receipt).');
     }
     if (values.supplier === undefined || values.month === undefined) {
       throw new InputError('--supplier and --month are required.');
-    }
-    if (values.method !== 'chain' && values.method !== 'receipt') {
-      throw new InputError('--method must be chain or receipt.');
     }
     if (values.format !== 'json' && values.format !== 'xml') {
       throw new InputError('--format must be json or xml.');
@@ -75,7 +96,7 @@ export function main(argv: string[]): number {
     if (values['issued-at'] !== undefined && !/(Z|[+-]\d{2}:\d{2})$/.test(values['issued-at'])) {
       throw new InputError('--issued-at needs a time zone, e.g. 2026-11-03T09:00:00+08:00 or ...Z.');
     }
-    const receipts = parseReceipts(read(positionals[1], 'receipts CSV'));
+    const receipts = parseReceipts(read(positionals[1], command === 'build' ? 'receipts CSV' : 'refunds CSV'));
     let supplierJson: unknown;
     try {
       supplierJson = JSON.parse(read(values.supplier, 'supplier file'));
@@ -85,7 +106,14 @@ export function main(argv: string[]): number {
       }
       throw new InputError(`supplier file is not valid JSON (${(error as Error).message}).`);
     }
-    const result = consolidate(receipts, parseSupplier(supplierJson), {
+    const supplier = parseSupplier(supplierJson);
+    if (command === 'refund-note') {
+      return refundCommand(receipts, supplier, values, issuedAt);
+    }
+    if (values.method !== 'chain' && values.method !== 'receipt') {
+      throw new InputError('--method must be chain or receipt.');
+    }
+    const result = consolidate(receipts, supplier, {
       month: values.month,
       method: values.method as Method,
       byBranch: values['by-branch'],
@@ -119,6 +147,53 @@ export function main(argv: string[]): number {
     }
     throw error;
   }
+}
+
+interface RefundValues {
+  month?: string;
+  format?: string;
+  out?: string;
+  json?: boolean;
+  original?: string;
+  'original-id'?: string;
+  'original-uuid'?: string;
+  id?: string;
+}
+
+function refundCommand(
+  refunds: ReturnType<typeof parseReceipts>,
+  supplier: ReturnType<typeof parseSupplier>,
+  values: RefundValues,
+  issuedAt: Date,
+): number {
+  if ((values.original === undefined) === (values['original-id'] === undefined)) {
+    throw new InputError('refund-note needs exactly one of --original <file.json> or --original-id <ID>.');
+  }
+  if (values['original-uuid'] === undefined) {
+    throw new InputError('refund-note needs --original-uuid (the UUID MyInvois returned for the consolidated e-Invoice).');
+  }
+  let originalDocument: OriginalDocument | undefined;
+  if (values.original !== undefined) {
+    originalDocument = parseOriginal(read(values.original, 'original document'));
+  }
+  const result = refundNote(refunds, supplier, {
+    month: values.month as string,
+    original: { id: originalDocument?.id ?? (values['original-id'] as string), uuid: values['original-uuid'] },
+    originalDocument,
+    id: values.id,
+    issuedAt,
+    format: values.format as 'json' | 'xml',
+  });
+  if (values.out !== undefined) {
+    const file = join(values.out, documentFile(result.id, result.format));
+    if (existsSync(file)) {
+      throw new InputError(`refusing to overwrite ${file}.`);
+    }
+    mkdirSync(values.out, { recursive: true });
+    writeFileSync(file, `${result.body}\n`, { flag: 'wx' });
+  }
+  process.stdout.write(values.json ? `${JSON.stringify(refundSummaryJson(result), null, 2)}\n` : refundTextReport(result, values.out));
+  return 0;
 }
 
 function read(path: string, what: string): string {

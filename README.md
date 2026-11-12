@@ -51,7 +51,7 @@ Exit codes: `0` ok, `1` documents do not reconcile with the receipts, `2` input 
 
 Header (any order, any case): `receipt,date,subtotal,tax_type,tax[,branch][,exemption_reason]`.
 
-- `subtotal` and `tax` are non-negative amounts in MYR with at most 2 decimals (refunds are not netted in this version), `date` is `YYYY-MM-DD`.
+- `subtotal` and `tax` are non-negative amounts in MYR with at most 2 decimals (refunds after submission go in a refund note, see below), `date` is `YYYY-MM-DD`.
 - `tax_type` is an [LHDN tax type](https://sdk.myinvois.hasil.gov.my/codes/tax-types/) `01` to `06` or `E`; `06` (Not Applicable) must have tax `0`.
 - `E` (tax exemption) rows must have tax `0` and an `exemption_reason` (one line, at most 300 characters, quote it
   if it contains commas). It is written as `TaxExemptionReason` on the type `E` tax subtotal of each line and of the
@@ -67,6 +67,27 @@ Header (any order, any case): `receipt,date,subtotal,tax_type,tax[,branch][,exem
 
 Money is handled as integer cents. The summary reconciles document totals with the receipt totals and prints them
 per tax type.
+
+### Refund notes
+
+Receipts refunded **after** the consolidated e-Invoice was submitted get a Refund Note (type `04`) against it. Refunds
+in the same month need no note: put the receipt at its final value in that month's `build` input instead.
+
+```bash
+myinvois-consolidate refund-note examples/refunds-2026-10.csv --supplier examples/supplier.json --month 2026-10 \
+  --original out/CONS-202610-001.json --original-uuid <UUID from MyInvois> --out out-refunds
+```
+
+- `refunds.csv` uses the receipts CSV columns. `date` is the original receipt date (it must fall in `--month`), and
+  `subtotal` / `tax` are the refunded amounts. One line per refunded receipt (`Refund of receipt R-0003`).
+- `--original FILE.json` reads the consolidated e-Invoice written by `build` and checks the supplier TIN, the month and
+  that the refund is not more than its payable amount. `--original-id ID` is the alternative when the JSON is not at
+  hand (for example an XML original); then nothing is checked and a warning says so.
+- `--original-uuid` is the UUID MyInvois returned when it validated the consolidated e-Invoice. Both ID and UUID go in
+  `BillingReference / InvoiceDocumentReference`, as the
+  [Refund Note v1.0](https://sdk.myinvois.hasil.gov.my/documents/refund-v1-0/) structure requires.
+- The buyer stays "General Public". `--id` sets the note ID (default `RN-<original ID>`); `--issued-at`, `--format`,
+  `--out` and `--json` work as for `build`. One run writes one note; all type `E` refunds must share one exemption reason.
 
 ## Limits of this version
 

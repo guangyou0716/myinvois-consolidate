@@ -129,12 +129,23 @@ export interface DocumentHeader {
   periodEnd: string;
 }
 
-/** Builds an unsigned UBL 2.1 JSON Invoice (type 01, version 1.0) for MyInvois. `exemptionReason` is required when any line has tax type E. */
+/** The validated e-Invoice a refund note adjusts: its internal ID (cbc:ID) and the UUID MyInvois assigned to it. */
+export interface OriginalReference {
+  id: string;
+  uuid: string;
+}
+
+/**
+ * Builds an unsigned UBL 2.1 JSON document (version 1.0) for MyInvois: an Invoice (type 01), or with `original` a
+ * Refund Note (type 04) that references the original e-Invoice in BillingReference / InvoiceDocumentReference.
+ * `exemptionReason` is required when any line has tax type E.
+ */
 export function documentJson(
   header: DocumentHeader,
   supplier: Supplier,
   lines: readonly ConsolidatedLine[],
   exemptionReason?: string,
+  original?: OriginalReference,
 ): Json {
   const totals = new Map<string, TaxPart>();
   for (const line of lines) {
@@ -155,12 +166,16 @@ export function documentJson(
         ID: v(header.id),
         IssueDate: v(header.issueDate),
         IssueTime: v(header.issueTime),
-        InvoiceTypeCode: v('01', { listVersionID: '1.0' }),
+        InvoiceTypeCode: v(original === undefined ? '01' : '04', { listVersionID: '1.0' }),
         DocumentCurrencyCode: v('MYR'),
         TaxCurrencyCode: v('MYR'),
         InvoicePeriod: [
           { StartDate: v(header.periodStart), EndDate: v(header.periodEnd), Description: v('Monthly') },
         ],
+        // UBL order: BillingReference follows InvoicePeriod and precedes the parties.
+        ...(original === undefined
+          ? {}
+          : { BillingReference: [{ InvoiceDocumentReference: [{ ID: v(original.id), UUID: v(original.uuid) }] }] }),
         AccountingSupplierParty: supplierParty(supplier),
         AccountingCustomerParty: generalPublicParty(),
         TaxTotal: taxTotal(totals, exemptionReason),
