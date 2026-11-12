@@ -26,6 +26,13 @@ for (const bin of [cli, link]) {
 }
 console.log('smoke: ok example (direct and via symlink) RM371.09, 1 document');
 
+const exempt = JSON.parse(execFileSync(process.execPath, [cli, 'build', example('receipts-2026-10-exempt.csv'), ...common], { encoding: 'utf8' }));
+const typeE = exempt.byTaxType?.find((t) => t.taxType === 'E');
+if (!exempt.reconciled || exempt.totalsFromDocuments.total !== '87.50' || typeE?.subtotal !== '57.50') {
+  fail(`exempt example: ${JSON.stringify(exempt.totalsFromDocuments)} ${JSON.stringify(typeE)}`);
+}
+console.log('smoke: ok tax type E example RM87.50 (E RM57.50)');
+
 // A busy month: 6000 receipts with every other number missing, one line per receipt -> must split.
 const rows = ['receipt,date,subtotal,tax_type,tax'];
 for (let i = 1; i <= 6000; i++) {

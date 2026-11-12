@@ -48,10 +48,15 @@ Exit codes: `0` ok, `1` documents do not reconcile with the receipts, `2` input 
 
 ### Receipts CSV
 
-Header (any order, any case): `receipt,date,subtotal,tax_type,tax[,branch]`.
+Header (any order, any case): `receipt,date,subtotal,tax_type,tax[,branch][,exemption_reason]`.
 
 - `subtotal` and `tax` are non-negative amounts in MYR with at most 2 decimals (refunds are not netted in this version), `date` is `YYYY-MM-DD`.
-- `tax_type` is an [LHDN tax type](https://sdk.myinvois.hasil.gov.my/codes/tax-types/) `01` to `06`; `06` (Not Applicable) must have tax `0`.
+- `tax_type` is an [LHDN tax type](https://sdk.myinvois.hasil.gov.my/codes/tax-types/) `01` to `06` or `E`; `06` (Not Applicable) must have tax `0`.
+- `E` (tax exemption) rows must have tax `0` and an `exemption_reason` (one line, at most 300 characters, quote it
+  if it contains commas). It is written as `TaxExemptionReason` on the type `E` tax subtotal of each line and of the
+  document. One run supports one reason: if receipts have different reasons, build them in separate runs with
+  different `--prefix` values. Other tax types must leave `exemption_reason` empty. MyInvois limits the special
+  characters in this field, so keep the text plain (see `examples/receipts-2026-10-exempt.csv`).
 - A receipt with several tax types has one row per tax type (same date and branch). Repeating the same receipt and
   tax type is an error.
 - Receipt numbers chain when the prefix matches and the trailing number goes up by one (`R-0099` then `R-0100`).
@@ -61,7 +66,7 @@ per tax type.
 
 ## Limits of this version
 
-- Tax type `E` (exempt, needs an exemption reason) is not supported yet.
+- One exemption reason per run for tax type `E`.
 - Output is version `1.0` and **unsigned**. Signing (version `1.1`) and submission are out of scope.
 - MYR only.
 - Supplier fields get basic checks only. Run a full pre-submission checker on the output.

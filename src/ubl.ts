@@ -14,17 +14,25 @@ const myr = (cents: bigint) => v(moneyNumber(cents), { currencyID: 'MYR' });
 const id = (value: string, schemeID: string) => ({ ID: v(value, { schemeID }) });
 const country = (code: string) => [{ IdentificationCode: v(code, { listID: 'ISO3166-1', listAgencyID: '6' }) }];
 
-function taxCategory(type: string): Json[] {
-  return [{ ID: v(type), TaxScheme: [{ ID: v('OTH', { schemeID: 'UN/ECE 5153', schemeAgencyID: '6' }) }] }];
+function taxCategory(type: string, exemptionReason: string | undefined): Json[] {
+  const category: Json = { ID: v(type) };
+  if (type === 'E') {
+    if (exemptionReason === undefined || exemptionReason === '') {
+      throw new Error('internal: tax type E needs an exemption reason.');
+    }
+    category.TaxExemptionReason = v(exemptionReason);
+  }
+  category.TaxScheme = [{ ID: v('OTH', { schemeID: 'UN/ECE 5153', schemeAgencyID: '6' }) }];
+  return [category];
 }
 
-function taxTotal(parts: Map<string, TaxPart>): Json[] {
+function taxTotal(parts: Map<string, TaxPart>, exemptionReason: string | undefined): Json[] {
   const types = [...parts.keys()].sort();
   let tax = 0n;
   const subtotals = types.map((type) => {
     const part = parts.get(type) as TaxPart;
     tax += part.tax;
-    return { TaxableAmount: myr(part.subtotal), TaxAmount: myr(part.tax), TaxCategory: taxCategory(type) };
+    return { TaxableAmount: myr(part.subtotal), TaxAmount: myr(part.tax), TaxCategory: taxCategory(type, exemptionReason) };
   });
   return [{ TaxAmount: myr(tax), TaxSubtotal: subtotals }];
 }
@@ -39,13 +47,14 @@ export function sumParts(parts: Map<string, TaxPart>): TaxPart {
   return { subtotal, tax };
 }
 
-export function lineJson(line: ConsolidatedLine, index: number): Json {
+/** One InvoiceLine. `exemptionReason` is required when the line has tax type E. */
+export function lineJson(line: ConsolidatedLine, index: number, exemptionReason?: string): Json {
   const { subtotal } = sumParts(line.parts);
   return {
     ID: v(String(index + 1)),
     InvoicedQuantity: v(1, { unitCode: 'C62' }),
     LineExtensionAmount: myr(subtotal),
-    TaxTotal: taxTotal(line.parts),
+    TaxTotal: taxTotal(line.parts, exemptionReason),
     Item: [
       {
         CommodityClassification: [{ ItemClassificationCode: v(CONSOLIDATED_CLASSIFICATION, { listID: 'CLASS' }) }],
@@ -119,8 +128,13 @@ export interface DocumentHeader {
   periodEnd: string;
 }
 
-/** Builds an unsigned UBL 2.1 JSON Invoice (type 01, version 1.0) for MyInvois. */
-export function documentJson(header: DocumentHeader, supplier: Supplier, lines: readonly ConsolidatedLine[]): Json {
+/** Builds an unsigned UBL 2.1 JSON Invoice (type 01, version 1.0) for MyInvois. `exemptionReason` is required when any line has tax type E. */
+export function documentJson(
+  header: DocumentHeader,
+  supplier: Supplier,
+  lines: readonly ConsolidatedLine[],
+  exemptionReason?: string,
+): Json {
   const totals = new Map<string, TaxPart>();
   for (const line of lines) {
     for (const [type, part] of line.parts) {
@@ -148,7 +162,7 @@ export function documentJson(header: DocumentHeader, supplier: Supplier, lines: 
         ],
         AccountingSupplierParty: supplierParty(supplier),
         AccountingCustomerParty: generalPublicParty(),
-        TaxTotal: taxTotal(totals),
+        TaxTotal: taxTotal(totals, exemptionReason),
         LegalMonetaryTotal: [
           {
             LineExtensionAmount: myr(subtotal),
@@ -157,7 +171,7 @@ export function documentJson(header: DocumentHeader, supplier: Supplier, lines: 
             PayableAmount: myr(subtotal + tax),
           },
         ],
-        InvoiceLine: lines.map(lineJson),
+        InvoiceLine: lines.map((line, i) => lineJson(line, i, exemptionReason)),
       },
     ],
   };
