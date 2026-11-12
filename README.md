@@ -54,9 +54,12 @@ Header (any order, any case): `receipt,date,subtotal,tax_type,tax[,branch][,exem
 - `tax_type` is an [LHDN tax type](https://sdk.myinvois.hasil.gov.my/codes/tax-types/) `01` to `06` or `E`; `06` (Not Applicable) must have tax `0`.
 - `E` (tax exemption) rows must have tax `0` and an `exemption_reason` (one line, at most 300 characters, quote it
   if it contains commas). It is written as `TaxExemptionReason` on the type `E` tax subtotal of each line and of the
-  document. One run supports one reason: if receipts have different reasons, build them in separate runs with
-  different `--prefix` values. Other tax types must leave `exemption_reason` empty. MyInvois limits the special
-  characters in this field, so keep the text plain (see `examples/receipts-2026-10-exempt.csv`).
+  document. Receipts may give different reasons: a document carries one reason, so with two or more reasons each
+  reason gets its own document series (`CONS-202610-E1-001`, `CONS-202610-PG1-E2-001`, numbered in order of first
+  appearance) holding the receipts with that reason, all their tax types included. Receipts without type `E` stay in
+  the plain series. The summary lists type `E` totals per reason. Other tax types must leave `exemption_reason`
+  empty. MyInvois limits the special characters in this field, so keep the text plain (see
+  `examples/receipts-2026-10-exempt.csv` and `examples/receipts-2026-10-exempt-multi.csv`).
 - A receipt with several tax types has one row per tax type (same date and branch). Repeating the same receipt and
   tax type is an error.
 - Receipt numbers chain when the prefix matches and the trailing number goes up by one (`R-0099` then `R-0100`).
@@ -66,7 +69,7 @@ per tax type.
 
 ## Limits of this version
 
-- One exemption reason per run for tax type `E`.
+- A receipt can have one exemption reason (one type `E` row).
 - Output is version `1.0` and **unsigned**. Signing (version `1.1`) and submission are out of scope.
 - MYR only.
 - Supplier fields get basic checks only. Run a full pre-submission checker on the output.

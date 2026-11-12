@@ -37,6 +37,16 @@ describe('cli', () => {
     );
     expect(io.out()).toContain('Total: RM85.90 + tax RM1.60 = RM87.50 (documents reconcile with receipts)');
   });
+  it('prints totals per exemption reason when there are several', () => {
+    const io = capture();
+    const multi = ['build', join(root, 'examples', 'receipts-2026-10-exempt-multi.csv'), ...args.slice(2)];
+    expect(main(multi)).toBe(0);
+    expect(io.out()).toContain('CONS-202610-E1-001');
+    expect(io.out()).toContain('tax type E: RM58.50 + tax RM0.00\n');
+    expect(io.out()).toContain('    E1: RM28.00 (exemption reason: Exempted goods, example reference EXM-2026-001 (synthetic))');
+    expect(io.out()).toContain('    E2: RM30.50 (exemption reason: Exempted services, example reference EXM-2026-002 (synthetic))');
+    expect(io.out()).toContain('(documents reconcile with receipts)');
+  });
   it('writes documents and summary.json, then refuses to overwrite', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cons-'));
     capture();

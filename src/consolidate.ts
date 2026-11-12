@@ -1,7 +1,7 @@
 import { InputError } from './errors.js';
 import { buildLines, type ConsolidatedLine, type Method } from './lines.js';
 import { formatMoney } from './money.js';
-import { exemptionReasonOf, type Receipt, type TaxPart } from './receipts.js';
+import { exemptionReasonsOf, validReasonOf, type Receipt, type TaxPart } from './receipts.js';
 import type { Supplier } from './supplier.js';
 import { documentJson, lineJson, sumParts } from './ubl.js';
 
@@ -37,6 +37,8 @@ export interface ConsolidateOptions {
 export interface DocumentResult {
   id: string;
   branch: string;
+  /** TaxExemptionReason of this document's tax type E lines, when it has any. */
+  exemptionReason?: string;
   lines: number;
   receipts: number;
   firstReceipt: string;
@@ -73,8 +75,15 @@ export interface ConsolidateResult {
   totalsFromDocuments: Totals;
   reconciled: boolean;
   byTaxType: Array<{ taxType: string } & Totals>;
-  /** TaxExemptionReason written for tax type E, when any receipt has it. */
+  /** TaxExemptionReason written for tax type E, when all type E receipts share one reason. */
   exemptionReason?: string;
+  /**
+   * Distinct exemption reasons in order of first appearance. With two or more, receipts with reason n go to their own
+   * document series with an `-E<n>` ID part, and receipts without type E keep the plain series.
+   */
+  exemptionReasons: string[];
+  /** Totals of tax type E per exemption reason (same order as exemptionReasons). */
+  byExemptionReason: Array<{ exemptionReason: string } & Totals>;
   warnings: string[];
 }
 
@@ -116,7 +125,8 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
     throw new InputError(`${outside.length} receipt(s) are outside ${options.month}: ${sample}${outside.length > 5 ? ` and ${outside.length - 5} more` : ''}.`);
   }
 
-  const exemptionReason = exemptionReasonOf(receipts);
+  const reasons = exemptionReasonsOf(receipts);
+  const split = reasons.length > 1;
   const warnings: string[] = [];
   const issuedMs = options.issuedAt.getTime();
   if (issuedMs < monthOverAt) {
@@ -125,16 +135,26 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
     warnings.push(`Issue time is after the deadline: consolidated e-Invoices for ${options.month} are due by ${submitBy} (7 calendar days after month end).`);
   }
 
-  const groups = new Map<string, Receipt[]>();
+  // Group key: branch ('' without --by-branch) and reason number (0 = no own reason series).
+  interface Group {
+    branch: string;
+    reasonNo: number;
+    receipts: Receipt[];
+  }
+  const groups = new Map<string, Group>();
   for (const receipt of receipts) {
     if (options.byBranch && receipt.branch === '') {
       throw new InputError(`receipt ${receipt.receipt} has no branch, but --by-branch is set.`);
     }
-    const key = options.byBranch ? receipt.branch : '';
-    const list = groups.get(key) ?? [];
-    list.push(receipt);
-    groups.set(key, list);
+    const branch = options.byBranch ? receipt.branch : '';
+    const reason = validReasonOf(receipt);
+    const reasonNo = split && reason !== undefined ? reasons.indexOf(reason) + 1 : 0;
+    const key = `${branch}\u0000${reasonNo}`;
+    const group = groups.get(key) ?? { branch, reasonNo, receipts: [] };
+    group.receipts.push(receipt);
+    groups.set(key, group);
   }
+  const ordered = [...groups.values()].sort((a, b) => (a.branch < b.branch ? -1 : a.branch > b.branch ? 1 : a.reasonNo - b.reasonNo));
 
   const issueDate = options.issuedAt.toISOString().slice(0, 10);
   const issueTime = `${options.issuedAt.toISOString().slice(11, 19)}Z`;
@@ -144,12 +164,13 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
   let docSubtotal = 0n;
   let docTax = 0n;
 
-  for (const branch of [...groups.keys()].sort()) {
-    const lines = buildLines(groups.get(branch) as Receipt[], options.method);
+  for (const { branch, reasonNo, receipts: groupReceipts } of ordered) {
+    const lines = buildLines(groupReceipts, options.method);
     lineCount += lines.length;
+    const exemptionReason = split ? (reasonNo === 0 ? undefined : reasons[reasonNo - 1]) : reasons[0];
     const chunks: ConsolidatedLine[][] = [];
     const header = (seq: number) => ({
-      id: `${prefix}-${yyyymm}${branch === '' ? '' : `-${branch}`}-${String(seq).padStart(3, '0')}`,
+      id: `${prefix}-${yyyymm}${branch === '' ? '' : `-${branch}`}${reasonNo === 0 ? '' : `-E${reasonNo}`}-${String(seq).padStart(3, '0')}`,
       issueDate,
       issueTime,
       periodStart,
@@ -195,9 +216,11 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
       docSubtotal += sum.subtotal;
       docTax += sum.tax;
       const last = chunk[chunk.length - 1];
+      const hasE = chunk.some((line) => line.parts.has('E'));
       documents.push({
         id: h.id,
         branch,
+        ...(hasE && exemptionReason !== undefined ? { exemptionReason } : {}),
         lines: chunk.length,
         receipts: receiptsInDoc,
         firstReceipt: chunk[0].receipts[0],
@@ -225,7 +248,15 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
   batches.push(batch);
 
   const byType = new Map<string, TaxPart>();
+  const byReason = new Map<string, TaxPart>(reasons.map((reason) => [reason, { subtotal: 0n, tax: 0n }]));
   for (const receipt of receipts) {
+    const reason = validReasonOf(receipt);
+    const e = receipt.parts.get('E');
+    if (reason !== undefined && e !== undefined) {
+      const t = byReason.get(reason) as TaxPart;
+      t.subtotal += e.subtotal;
+      t.tax += e.tax;
+    }
     for (const [type, part] of receipt.parts) {
       const t = byType.get(type) ?? { subtotal: 0n, tax: 0n };
       t.subtotal += part.subtotal;
@@ -257,7 +288,12 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
       const t = byType.get(taxType) as TaxPart;
       return { taxType, ...totals(t.subtotal, t.tax) };
     }),
-    ...(exemptionReason === undefined ? {} : { exemptionReason }),
+    ...(reasons.length === 1 ? { exemptionReason: reasons[0] } : {}),
+    exemptionReasons: reasons,
+    byExemptionReason: reasons.map((exemptionReason) => {
+      const t = byReason.get(exemptionReason) as TaxPart;
+      return { exemptionReason, ...totals(t.subtotal, t.tax) };
+    }),
     warnings,
   };
 }
