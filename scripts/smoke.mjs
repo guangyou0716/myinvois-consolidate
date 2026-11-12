@@ -88,3 +88,18 @@ if (refund.id !== 'RN-CONS-202610-001' || refund.totals.total !== '141.30' || !r
   fail(`refund note: ${JSON.stringify(refund)}`);
 }
 console.log('smoke: ok refund note RN-CONS-202610-001 RM141.30 against CONS-202610-001');
+
+// Credit note (type 02) against the same consolidated e-Invoice.
+const credit = JSON.parse(
+  execFileSync(
+    process.execPath,
+    [cli, 'credit-note', example('credits-2026-10.csv'), '--supplier', example('supplier.json'), '--month', '2026-10',
+      '--original', join(consOut, 'CONS-202610-001.json'), '--original-uuid', 'F9D425P6DS7D8IU5ABCDEF1234',
+      '--issued-at', '2026-11-20T10:00:00+08:00', '--json'],
+    { encoding: 'utf8' },
+  ),
+);
+if (credit.id !== 'CN-CONS-202610-001' || credit.typeCode !== '02' || credit.totals.total !== '12.80' || !credit.checkedAgainstOriginal) {
+  fail(`credit note: ${JSON.stringify(credit)}`);
+}
+console.log('smoke: ok credit note CN-CONS-202610-001 (type 02) RM12.80 against CONS-202610-001');

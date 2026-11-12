@@ -89,6 +89,22 @@ myinvois-consolidate refund-note examples/refunds-2026-10.csv --supplier example
 - The buyer stays "General Public". `--id` sets the note ID (default `RN-<original ID>`); `--issued-at`, `--format`,
   `--out` and `--json` work as for `build`. One run writes one note; all type `E` refunds must share one exemption reason.
 
+### Credit notes
+
+When a receipt's amount is reduced **after** the consolidated e-Invoice was submitted and no money is paid back (a
+discount or price correction), `credit-note` writes a Credit Note (type `02`) the same way:
+
+```bash
+myinvois-consolidate credit-note examples/credits-2026-10.csv --supplier examples/supplier.json --month 2026-10 \
+  --original out/CONS-202610-001.json --original-uuid <UUID from MyInvois> --out out-credits
+```
+
+- `credits.csv` uses the receipts CSV columns; `subtotal` / `tax` are the reductions. One line per receipt
+  (`Credit for receipt R-0007`). The default ID is `CN-<original ID>`.
+- Options and checks are the same as for `refund-note`, per the
+  [Credit Note v1.0](https://sdk.myinvois.hasil.gov.my/documents/credit-v1-0/) structure. Money paid back is a refund
+  note, not a credit note.
+
 ## Limits of this version
 
 - A receipt can have one exemption reason (one type `E` row).

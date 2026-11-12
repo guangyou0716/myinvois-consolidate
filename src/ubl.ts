@@ -135,10 +135,13 @@ export interface OriginalReference {
   uuid: string;
 }
 
+/** e-Invoice type codes of the notes that adjust a validated e-Invoice: 02 Credit Note, 04 Refund Note. */
+export type AdjustmentType = '02' | '04';
+
 /**
  * Builds an unsigned UBL 2.1 JSON document (version 1.0) for MyInvois: an Invoice (type 01), or with `original` a
- * Refund Note (type 04) that references the original e-Invoice in BillingReference / InvoiceDocumentReference.
- * `exemptionReason` is required when any line has tax type E.
+ * Refund Note (type 04, default) or Credit Note (`adjustmentType` 02) that references the original e-Invoice in
+ * BillingReference / InvoiceDocumentReference. `exemptionReason` is required when any line has tax type E.
  */
 export function documentJson(
   header: DocumentHeader,
@@ -146,6 +149,7 @@ export function documentJson(
   lines: readonly ConsolidatedLine[],
   exemptionReason?: string,
   original?: OriginalReference,
+  adjustmentType: AdjustmentType = '04',
 ): Json {
   const totals = new Map<string, TaxPart>();
   for (const line of lines) {
@@ -166,7 +170,7 @@ export function documentJson(
         ID: v(header.id),
         IssueDate: v(header.issueDate),
         IssueTime: v(header.issueTime),
-        InvoiceTypeCode: v(original === undefined ? '01' : '04', { listVersionID: '1.0' }),
+        InvoiceTypeCode: v(original === undefined ? '01' : adjustmentType, { listVersionID: '1.0' }),
         DocumentCurrencyCode: v('MYR'),
         TaxCurrencyCode: v('MYR'),
         InvoicePeriod: [
