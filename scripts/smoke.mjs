@@ -71,3 +71,20 @@ for (const file of xmlFiles) {
 }
 console.log(`smoke: ok big month as XML -> ${xmlSummary.documents.length} documents, RM${xmlSummary.totalsFromDocuments.total}`);
 console.log(`smoke: files in ${out} and ${outXml}`);
+
+// Refund note against the example consolidated e-Invoice, checked against the original document.
+const consOut = join(dir, 'cons');
+execFileSync(process.execPath, [cli, 'build', example('receipts-2026-10.csv'), ...common, '--out', consOut], { encoding: 'utf8' });
+const refund = JSON.parse(
+  execFileSync(
+    process.execPath,
+    [cli, 'refund-note', example('refunds-2026-10.csv'), '--supplier', example('supplier.json'), '--month', '2026-10',
+      '--original', join(consOut, 'CONS-202610-001.json'), '--original-uuid', 'F9D425P6DS7D8IU5ABCDEF1234',
+      '--issued-at', '2026-11-20T10:00:00+08:00', '--json'],
+    { encoding: 'utf8' },
+  ),
+);
+if (refund.id !== 'RN-CONS-202610-001' || refund.totals.total !== '141.30' || !refund.checkedAgainstOriginal) {
+  fail(`refund note: ${JSON.stringify(refund)}`);
+}
+console.log('smoke: ok refund note RN-CONS-202610-001 RM141.30 against CONS-202610-001');
