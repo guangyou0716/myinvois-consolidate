@@ -26,7 +26,8 @@ export function textReport(result: ConsolidateResult, outDir?: string): string {
   }
   out.push('');
   for (const t of result.byTaxType) {
-    out.push(`  tax type ${t.taxType}: RM${t.subtotal} + tax RM${t.tax}`);
+    const reason = t.taxType === 'E' && result.exemptionReason !== undefined ? ` (exemption reason: ${result.exemptionReason})` : '';
+    out.push(`  tax type ${t.taxType}: RM${t.subtotal} + tax RM${t.tax}${reason}`);
   }
   const r = result.totalsFromReceipts;
   out.push(`Total: RM${r.subtotal} + tax RM${r.tax} = RM${r.total} (${result.reconciled ? 'documents reconcile with receipts' : 'DOES NOT RECONCILE'})`);

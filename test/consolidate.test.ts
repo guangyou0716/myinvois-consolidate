@@ -16,6 +16,7 @@ describe('consolidate', () => {
     expect(result.totalsFromDocuments).toEqual(result.totalsFromReceipts);
     expect(result.submitBy).toBe('2026-11-07');
     expect(result.warnings).toEqual([]);
+    expect(result).not.toHaveProperty('exemptionReason');
     const doc = result.documents[0];
     expect(doc.id).toBe('CONS-202610-001');
     const invoice = inv(doc);
@@ -40,6 +41,39 @@ describe('consolidate', () => {
     const taxTypes = invoice.TaxTotal[0].TaxSubtotal.map((s: { TaxCategory: { ID: { _: string }[] }[] }) => s.TaxCategory[0].ID[0]._);
     expect(taxTypes).toEqual(['02', '06']);
     expect(invoice.TaxTotal[0].TaxAmount[0]._).toBe(18.14);
+  });
+
+  it('writes tax type E with its exemption reason at line and document level, and reconciles', () => {
+    const reason = 'Exempted goods, example reference EXM-2026-001 (synthetic)';
+    const result = consolidate(parseReceipts(example('receipts-2026-10-exempt.csv')), supplier(), {
+      month: '2026-10',
+      method: 'chain',
+      issuedAt: NOV_3,
+    });
+    expect(result.reconciled).toBe(true);
+    expect(result.totalsFromDocuments).toEqual({ subtotal: '85.90', tax: '1.60', total: '87.50' });
+    expect(result.byTaxType).toEqual([
+      { taxType: '02', subtotal: '20.00', tax: '1.60', total: '21.60' },
+      { taxType: '06', subtotal: '8.40', tax: '0.00', total: '8.40' },
+      { taxType: 'E', subtotal: '57.50', tax: '0.00', total: '57.50' },
+    ]);
+    expect(result.exemptionReason).toBe(reason);
+    const invoice = inv(result.documents[0]);
+    const exempt = invoice.TaxTotal[0].TaxSubtotal[2];
+    expect(exempt.TaxableAmount[0]).toEqual({ _: 57.5, currencyID: 'MYR' });
+    expect(exempt.TaxAmount[0]).toEqual({ _: 0, currencyID: 'MYR' });
+    expect(exempt.TaxCategory[0].ID[0]._).toBe('E');
+    expect(exempt.TaxCategory[0].TaxExemptionReason[0]._).toBe(reason);
+    expect(Object.keys(exempt.TaxCategory[0])).toEqual(['ID', 'TaxExemptionReason', 'TaxScheme']);
+    // S-0001..S-0002 chain, then S-0004
+    const first = invoice.InvoiceLine[0];
+    expect(first.Item[0].Description[0]._).toBe('Receipts S-0001 - S-0002');
+    const lineTypes = first.TaxTotal[0].TaxSubtotal.map((x: { TaxCategory: { ID: { _: string }[] }[] }) => x.TaxCategory[0].ID[0]._);
+    expect(lineTypes).toEqual(['02', 'E']);
+    expect(first.TaxTotal[0].TaxSubtotal[1].TaxCategory[0].TaxExemptionReason[0]._).toBe(reason);
+    expect(invoice.InvoiceLine[1].TaxTotal[0].TaxSubtotal[0].TaxCategory[0]).not.toHaveProperty('TaxExemptionReason');
+    // other tax categories never get a reason
+    expect(invoice.TaxTotal[0].TaxSubtotal[0].TaxCategory[0]).not.toHaveProperty('TaxExemptionReason');
   });
 
   it('receipt method lists every receipt, by-branch gives one series per branch', () => {

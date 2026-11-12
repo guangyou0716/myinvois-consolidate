@@ -4,7 +4,7 @@ export { InputError } from './errors.js';
 export { buildLines, compareReceipts, follows, splitReceiptNumber } from './lines.js';
 export type { ConsolidatedLine, Method } from './lines.js';
 export { formatMoney, moneyNumber, parseMoney } from './money.js';
-export { parseReceipts, TAX_TYPES } from './receipts.js';
+export { EXEMPTION_REASON_MAX, exemptionReasonOf, parseReceipts, TAX_TYPES } from './receipts.js';
 export type { Receipt, TaxPart } from './receipts.js';
 export { summaryJson, textReport } from './report.js';
 export { parseSupplier } from './supplier.js';

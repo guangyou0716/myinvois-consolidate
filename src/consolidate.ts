@@ -1,7 +1,7 @@
 import { InputError } from './errors.js';
 import { buildLines, type ConsolidatedLine, type Method } from './lines.js';
 import { formatMoney } from './money.js';
-import type { Receipt, TaxPart } from './receipts.js';
+import { exemptionReasonOf, type Receipt, type TaxPart } from './receipts.js';
 import type { Supplier } from './supplier.js';
 import { documentJson, lineJson, sumParts } from './ubl.js';
 
@@ -73,6 +73,8 @@ export interface ConsolidateResult {
   totalsFromDocuments: Totals;
   reconciled: boolean;
   byTaxType: Array<{ taxType: string } & Totals>;
+  /** TaxExemptionReason written for tax type E, when any receipt has it. */
+  exemptionReason?: string;
   warnings: string[];
 }
 
@@ -114,6 +116,7 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
     throw new InputError(`${outside.length} receipt(s) are outside ${options.month}: ${sample}${outside.length > 5 ? ` and ${outside.length - 5} more` : ''}.`);
   }
 
+  const exemptionReason = exemptionReasonOf(receipts);
   const warnings: string[] = [];
   const issuedMs = options.issuedAt.getTime();
   if (issuedMs < monthOverAt) {
@@ -152,11 +155,11 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
       periodStart,
       periodEnd,
     });
-    const base = bytes(documentJson(header(999), supplier, [])) + ESTIMATE_MARGIN_BYTES;
+    const base = bytes(documentJson(header(999), supplier, [], exemptionReason)) + ESTIMATE_MARGIN_BYTES;
     let current: ConsolidatedLine[] = [];
     let size = base;
     for (const line of lines) {
-      const lineBytes = bytes(lineJson(line, 99_999)) + 1;
+      const lineBytes = bytes(lineJson(line, 99_999, exemptionReason)) + 1;
       if (base + lineBytes > limits.documentBytes) {
         throw new InputError(`line "${line.description}" alone does not fit in a ${limits.documentBytes}-byte document.`);
       }
@@ -172,7 +175,7 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
 
     chunks.forEach((chunk, i) => {
       const h = header(i + 1);
-      const json = documentJson(h, supplier, chunk);
+      const json = documentJson(h, supplier, chunk, exemptionReason);
       const docBytes = bytes(json);
       if (docBytes > limits.documentBytes) {
         throw new Error(`internal: ${h.id} is ${docBytes} bytes, over the ${limits.documentBytes}-byte limit.`);
@@ -254,6 +257,7 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
       const t = byType.get(taxType) as TaxPart;
       return { taxType, ...totals(t.subtotal, t.tax) };
     }),
+    ...(exemptionReason === undefined ? {} : { exemptionReason }),
     warnings,
   };
 }

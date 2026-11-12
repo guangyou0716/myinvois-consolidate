@@ -1,0 +1,5 @@
+receipt,date,subtotal,tax_type,tax,exemption_reason
+S-0001,2026-10-02,20.00,02,1.60,
+S-0001,2026-10-02,15.00,E,0,"Exempted goods, example reference EXM-2026-001 (synthetic)"
+S-0002,2026-10-09,42.50,E,0,"Exempted goods, example reference EXM-2026-001 (synthetic)"
+S-0004,2026-10-20,8.40,06,0,

@@ -28,6 +28,15 @@ describe('cli', () => {
     expect(io.out()).toContain('Submit by 2026-11-07');
     expect(io.out()).toContain('Dry run');
   });
+  it('prints the exemption reason next to tax type E', () => {
+    const io = capture();
+    const exempt = ['build', join(root, 'examples', 'receipts-2026-10-exempt.csv'), ...args.slice(2)];
+    expect(main(exempt)).toBe(0);
+    expect(io.out()).toContain(
+      'tax type E: RM57.50 + tax RM0.00 (exemption reason: Exempted goods, example reference EXM-2026-001 (synthetic))',
+    );
+    expect(io.out()).toContain('Total: RM85.90 + tax RM1.60 = RM87.50 (documents reconcile with receipts)');
+  });
   it('writes documents and summary.json, then refuses to overwrite', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cons-'));
     capture();

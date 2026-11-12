@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isRealDate, parseReceipts } from '../src/receipts.js';
+import { exemptionReasonOf, isRealDate, parseReceipts } from '../src/receipts.js';
 import { csv, example } from './helpers.js';
 
 describe('parseReceipts', () => {
@@ -28,10 +28,38 @@ describe('parseReceipts', () => {
   });
   it('rejects bad dates, tax types, tax on 06, and bad branch codes', () => {
     expect(() => parseReceipts(csv([['A', '2026-02-30', '1', '06', '0']]))).toThrow(/not a real YYYY-MM-DD/);
-    expect(() => parseReceipts(csv([['A', '2026-10-01', '1', 'E', '0']]))).toThrow(/tax type E/);
     expect(() => parseReceipts(csv([['A', '2026-10-01', '1', '07', '0']]))).toThrow(/not one of 01, 02/);
     expect(() => parseReceipts(csv([['A', '2026-10-01', '1', '06', '0.10']]))).toThrow(/must have tax 0/);
     expect(() => parseReceipts(csv([['A', '2026-10-01', '1', '06', '0', 'bad branch']], true))).toThrow(/branch "bad branch"/);
+  });
+  it('accepts tax type E with an exemption reason (quoted, with commas) and keeps it on the receipt', () => {
+    const receipts = parseReceipts(example('receipts-2026-10-exempt.csv'));
+    const s1 = receipts.find((r) => r.receipt === 'S-0001');
+    expect(s1?.parts.get('E')).toEqual({ subtotal: 1500n, tax: 0n });
+    expect(s1?.exemptionReason).toBe('Exempted goods, example reference EXM-2026-001 (synthetic)');
+    expect(receipts.find((r) => r.receipt === 'S-0004')?.exemptionReason).toBeUndefined();
+    const lower = 'receipt,date,subtotal,tax_type,tax,exemption_reason\nA,2026-10-01,1,e,0,Gazette ref (1)';
+    expect([...parseReceipts(lower)[0].parts.keys()]).toEqual(['E']);
+  });
+  it('rejects tax type E without a reason, with tax, with mixed reasons, and reasons on other types', () => {
+    const head = 'receipt,date,subtotal,tax_type,tax,exemption_reason\n';
+    expect(() => parseReceipts(csv([['A', '2026-10-01', '1', 'E', '0']]))).toThrow(/needs an exemption_reason/);
+    expect(() => parseReceipts(`${head}A,2026-10-01,1,E,0, `)).toThrow(/data row 1: tax type E .* needs an exemption_reason/);
+    expect(() => parseReceipts(`${head}A,2026-10-01,1,E,0.10,X`)).toThrow(/tax type E \(exempt\) must have tax 0/);
+    expect(() => parseReceipts(`${head}A,2026-10-01,1,E,0,X\nB,2026-10-01,1,E,0,Y`)).toThrow(/data row 2: exemption_reason differs from data row 1/);
+    expect(() => parseReceipts(`${head}A,2026-10-01,1,06,0,X`)).toThrow(/only allowed on tax type E rows/);
+    expect(() => parseReceipts(`${head}A,2026-10-01,1,E,0,${'x'.repeat(301)}`)).toThrow(/at most 300 characters/);
+    expect(() => parseReceipts(`${head}A,2026-10-01,1,E,0,"two\nlines"`)).toThrow(/one line/);
+    expect(parseReceipts(`${head}A,2026-10-01,1,E,0,${'x'.repeat(300)}`)[0].exemptionReason).toHaveLength(300);
+  });
+  it('exemptionReasonOf checks receipts built in code', () => {
+    const part = { subtotal: 100n, tax: 0n };
+    const r = (receipt: string, exemptionReason?: string) => ({ receipt, date: '2026-10-01', branch: '', parts: new Map([['E', part]]), exemptionReason });
+    expect(exemptionReasonOf([])).toBeUndefined();
+    expect(exemptionReasonOf([r('A', ' X '), r('B', 'X')])).toBe('X');
+    expect(() => exemptionReasonOf([r('A')])).toThrow(/receipt A has tax type E but no valid exemption reason/);
+    expect(() => exemptionReasonOf([r('A', 'a\nb')])).toThrow(/no valid exemption reason/);
+    expect(() => exemptionReasonOf([r('A', 'X'), r('B', 'Y')])).toThrow(/receipt B has a different exemption reason/);
   });
   it('rejects ragged rows and empty input', () => {
     expect(() => parseReceipts(csv([['A', '2026-10-01', '1', '06']]))).toThrow(/has 4 fields, header has 5/);
