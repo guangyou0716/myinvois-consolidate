@@ -7,13 +7,14 @@ import { consolidate } from './consolidate.js';
 import { InputError } from './errors.js';
 import type { Method } from './lines.js';
 import { parseReceipts } from './receipts.js';
-import { parseOriginal, refundNote, refundSummaryJson, refundTextReport, type OriginalDocument } from './refund.js';
+import { parseOriginal, refundNote, refundSummaryJson, refundTextReport, type NoteKind, type OriginalDocument } from './refund.js';
 import { documentFile, summaryJson, textReport } from './report.js';
 import { parseSupplier } from './supplier.js';
 
 const USAGE = `Usage: myinvois-consolidate build <receipts.csv> --supplier <supplier.json> --month YYYY-MM [options]
        myinvois-consolidate refund-note <refunds.csv> --supplier <supplier.json> --month YYYY-MM
                             (--original <CONS-....json> | --original-id <ID>) --original-uuid <UUID> [options]
+       myinvois-consolidate credit-note <credits.csv> ... (same options as refund-note)
 
 Builds monthly consolidated e-Invoices (buyer "General Public", TIN EI00000000010, classification 004)
 from B2C receipts, as unsigned MyInvois UBL 2.1 JSON or XML (v1.0). Offline; never submits anything.
@@ -38,6 +39,10 @@ refunded amounts. One line per refunded receipt.
   --original-uuid <UUID>  the UUID MyInvois returned when it validated the consolidated e-Invoice
   --id <text>           refund note ID (default RN-<original ID>)
   --issued-at, --format, --out, --json as for build (--out writes <ID>.json or <ID>.xml)
+
+credit-note: the same, as one unsigned Credit Note (type 02) for receipts whose amount was reduced after the
+consolidated e-Invoice was submitted (a discount or price correction, no money paid back). credits.csv amounts are the
+reductions; the default ID is CN-<original ID>.
 
 Exit codes: 0 ok, 1 documents do not reconcile with receipts, 2 input error.
 `;
@@ -76,15 +81,16 @@ export function main(argv: string[]): number {
   }
   try {
     const command = positionals[0];
-    if ((command !== 'build' && command !== 'refund-note') || positionals.length !== 2) {
-      throw new InputError('expected: build <receipts.csv> or refund-note <refunds.csv>');
+    const isNote = command === 'refund-note' || command === 'credit-note';
+    if ((command !== 'build' && !isNote) || positionals.length !== 2) {
+      throw new InputError('expected: build <receipts.csv>, refund-note <refunds.csv> or credit-note <credits.csv>');
     }
     const refundOnly = ['original', 'original-id', 'original-uuid', 'id'] as const;
     if (command === 'build' && refundOnly.some((name) => values[name] !== undefined)) {
-      throw new InputError('--original, --original-id, --original-uuid and --id are for refund-note only.');
+      throw new InputError('--original, --original-id, --original-uuid and --id are for refund-note and credit-note only.');
     }
-    if (command === 'refund-note' && (values['by-branch'] || values.prefix !== undefined || argv.some((a) => a === '--method' || a.startsWith('--method=')))) {
-      throw new InputError('--method, --by-branch and --prefix are for build only (a refund note has one line per refunded receipt).');
+    if (isNote && (values['by-branch'] || values.prefix !== undefined || argv.some((a) => a === '--method' || a.startsWith('--method=')))) {
+      throw new InputError(`--method, --by-branch and --prefix are for build only (a ${command === 'credit-note' ? 'credit' : 'refund'} note has one line per receipt).`);
     }
     if (values.supplier === undefined || values.month === undefined) {
       throw new InputError('--supplier and --month are required.');
@@ -96,7 +102,7 @@ export function main(argv: string[]): number {
     if (values['issued-at'] !== undefined && !/(Z|[+-]\d{2}:\d{2})$/.test(values['issued-at'])) {
       throw new InputError('--issued-at needs a time zone, e.g. 2026-11-03T09:00:00+08:00 or ...Z.');
     }
-    const receipts = parseReceipts(read(positionals[1], command === 'build' ? 'receipts CSV' : 'refunds CSV'));
+    const receipts = parseReceipts(read(positionals[1], command === 'build' ? 'receipts CSV' : command === 'credit-note' ? 'credits CSV' : 'refunds CSV'));
     let supplierJson: unknown;
     try {
       supplierJson = JSON.parse(read(values.supplier, 'supplier file'));
@@ -107,8 +113,8 @@ export function main(argv: string[]): number {
       throw new InputError(`supplier file is not valid JSON (${(error as Error).message}).`);
     }
     const supplier = parseSupplier(supplierJson);
-    if (command === 'refund-note') {
-      return refundCommand(receipts, supplier, values, issuedAt);
+    if (isNote) {
+      return refundCommand(command === 'credit-note' ? 'credit' : 'refund', receipts, supplier, values, issuedAt);
     }
     if (values.method !== 'chain' && values.method !== 'receipt') {
       throw new InputError('--method must be chain or receipt.');
@@ -161,22 +167,24 @@ interface RefundValues {
 }
 
 function refundCommand(
+  kind: NoteKind,
   refunds: ReturnType<typeof parseReceipts>,
   supplier: ReturnType<typeof parseSupplier>,
   values: RefundValues,
   issuedAt: Date,
 ): number {
   if ((values.original === undefined) === (values['original-id'] === undefined)) {
-    throw new InputError('refund-note needs exactly one of --original <file.json> or --original-id <ID>.');
+    throw new InputError(`${kind}-note needs exactly one of --original <file.json> or --original-id <ID>.`);
   }
   if (values['original-uuid'] === undefined) {
-    throw new InputError('refund-note needs --original-uuid (the UUID MyInvois returned for the consolidated e-Invoice).');
+    throw new InputError(`${kind}-note needs --original-uuid (the UUID MyInvois returned for the consolidated e-Invoice).`);
   }
   let originalDocument: OriginalDocument | undefined;
   if (values.original !== undefined) {
     originalDocument = parseOriginal(read(values.original, 'original document'));
   }
   const result = refundNote(refunds, supplier, {
+    kind,
     month: values.month as string,
     original: { id: originalDocument?.id ?? (values['original-id'] as string), uuid: values['original-uuid'] },
     originalDocument,

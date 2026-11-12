@@ -6,7 +6,7 @@ import { main } from '../src/cli.js';
 import { consolidate } from '../src/consolidate.js';
 import { InputError } from '../src/errors.js';
 import { parseReceipts } from '../src/receipts.js';
-import { parseOriginal, refundNote } from '../src/refund.js';
+import { parseOriginal, refundNote, refundTextReport } from '../src/refund.js';
 import { csv, example, NOV_3, root, supplier } from './helpers.js';
 
 const UUID = 'F9D425P6DS7D8IU5ABCDEF1234';
@@ -141,6 +141,65 @@ describe('cli refund-note', () => {
     expect(io.err()).toContain('exactly one of --original');
     expect(io.err()).toContain('needs --original-uuid');
     expect(io.err()).toContain('for build only');
-    expect(io.err()).toContain('for refund-note only');
+    expect(io.err()).toContain('for refund-note and credit-note only');
+  });
+});
+
+describe('credit notes (type 02)', () => {
+  afterEach(() => vi.restoreAllMocks());
+  const credits = () => parseReceipts(example('credits-2026-10.csv'));
+  const base = { kind: 'credit' as const, month: '2026-10', original: { id: 'CONS-202610-001', uuid: UUID }, issuedAt: NOV_20 };
+
+  it('builds a type 02 credit note with the same original reference, CN- ID and credit line descriptions', () => {
+    const r = refundNote(credits(), supplier(), base);
+    const inv = (r.json as Json).Invoice[0];
+    expect(r).toMatchObject({ kind: 'credit', typeCode: '02', id: 'CN-CONS-202610-001', receipts: 2, lines: 2, totals: { subtotal: '12.00', tax: '0.80', total: '12.80' } });
+    expect(inv.InvoiceTypeCode[0]).toEqual({ _: '02', listVersionID: '1.0' });
+    expect(inv.BillingReference[0].InvoiceDocumentReference[0]).toEqual({ ID: [{ _: 'CONS-202610-001' }], UUID: [{ _: UUID }] });
+    expect(inv.InvoiceLine.map((l: Json) => l.Item[0].Description[0]._)).toEqual(['Credit for receipt R-0001', 'Credit for receipt R-0007']);
+    expect(inv.LegalMonetaryTotal[0].PayableAmount[0]._).toBe(12.8);
+  });
+
+  it('refund stays the default kind (type 04, RN-)', () => {
+    const r = refundNote(credits(), supplier(), { ...base, kind: undefined });
+    expect(r).toMatchObject({ kind: 'refund', typeCode: '04', id: 'RN-CONS-202610-001' });
+  });
+
+  it('uses credit wording in errors and the text report', () => {
+    expect(() => refundNote(credits(), supplier(), { ...base, id: 'CONS-202610-001' })).toThrow(/credit note ID must differ/);
+    expect(() => refundNote(credits(), supplier(), { ...base, documentBytes: 1000 })).toThrow(/split the credits CSV/);
+    expect(() => refundNote(credits(), supplier(), { ...base, month: '2026-11' })).toThrow(/in the credits CSV are outside 2026-11/);
+    const doc = { id: 'CONS-202610-001', supplierTin: supplier().tin, periodStart: '2026-10-01', periodEnd: '2026-10-31', payable: 1279n };
+    expect(() => refundNote(credits(), supplier(), { ...base, originalDocument: doc })).toThrow(/credit note total RM12.80 is more than .* RM12.79/);
+    const text = refundTextReport(refundNote(credits(), supplier(), base));
+    expect(text).toContain('Credit note CN-CONS-202610-001 (type 02) against consolidated e-Invoice CONS-202610-001');
+    expect(text).toContain('Credit total: RM12.00 + tax RM0.80 = RM12.80');
+    expect(text).toContain('The credit note is unsigned v1.0 JSON');
+  });
+
+  it('writes XML with type 02', () => {
+    const r = refundNote(credits(), supplier(), { ...base, format: 'xml' });
+    expect(r.body).toContain('<cbc:InvoiceTypeCode listVersionID="1.0">02</cbc:InvoiceTypeCode>');
+    expect(r.body).toContain('<cbc:UUID>' + UUID + '</cbc:UUID>');
+  });
+
+  it('cli credit-note writes CN-<original>.json checked against the original', () => {
+    let out = '';
+    let err = '';
+    vi.spyOn(process.stdout, 'write').mockImplementation((c) => ((out += String(c)), true));
+    vi.spyOn(process.stderr, 'write').mockImplementation((c) => ((err += String(c)), true));
+    const ex = (n: string) => join(root, 'examples', n);
+    const dir = mkdtempSync(join(tmpdir(), 'cn-'));
+    const common = ['--supplier', ex('supplier.json'), '--month', '2026-10'];
+    expect(main(['build', ex('receipts-2026-10.csv'), ...common, '--issued-at', '2026-11-03T09:00:00+08:00', '--out', join(dir, 'cons')])).toBe(0);
+    const args = ['credit-note', ex('credits-2026-10.csv'), ...common, '--issued-at', '2026-11-20T10:00:00+08:00', '--original', join(dir, 'cons', 'CONS-202610-001.json'), '--original-uuid', UUID];
+    expect(main([...args, '--out', join(dir, 'cn')])).toBe(0);
+    expect(out).toContain('Credit total: RM12.00 + tax RM0.80 = RM12.80');
+    expect(readdirSync(join(dir, 'cn'))).toEqual(['CN-CONS-202610-001.json']);
+    expect(JSON.parse(readFileSync(join(dir, 'cn', 'CN-CONS-202610-001.json'), 'utf8')).Invoice[0].InvoiceTypeCode[0]._).toBe('02');
+    expect(main([...args, '--by-branch'])).toBe(2);
+    expect(err).toContain('a credit note has one line per receipt');
+    expect(main(['credit-note', ex('credits-2026-10.csv'), ...common, '--original-id', 'C'])).toBe(2);
+    expect(err).toContain('credit-note needs --original-uuid');
   });
 });

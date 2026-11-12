@@ -5,14 +5,14 @@ import { buildLines } from './lines.js';
 import { formatMoney, parseMoney } from './money.js';
 import { exemptionReasonOf, type Receipt, type TaxPart } from './receipts.js';
 import type { Supplier } from './supplier.js';
-import { documentJson, sumParts, type OriginalReference } from './ubl.js';
+import { documentJson, sumParts, type AdjustmentType, type OriginalReference } from './ubl.js';
 import { ublJsonToXml } from './xml.js';
 
 /** MyInvois field limits: e-Invoice Code / Number 50 characters, Original e-Invoice Reference Number (UUID) 26. */
 const ID_MAX = 50;
 const UUID_MAX = 26;
 
-/** The parts of a consolidated e-Invoice JSON (as written by `build`) that a refund note is checked against. */
+/** The parts of a consolidated e-Invoice JSON (as written by `build`) that a refund or credit note is checked against. */
 export interface OriginalDocument {
   id: string;
   supplierTin: string;
@@ -22,14 +22,28 @@ export interface OriginalDocument {
   payable: bigint;
 }
 
+/**
+ * refund: money paid back for receipts (Refund Note, type 04). credit: the amount of receipts reduced after the
+ * consolidated e-Invoice was submitted (e.g. a discount or price correction) without money being paid back
+ * (Credit Note, type 02). Both reference the original e-Invoice the same way.
+ */
+export type NoteKind = 'refund' | 'credit';
+
+const KINDS: Record<NoteKind, { typeCode: AdjustmentType; noun: string; prefix: string; csv: string; line: (receipt: string) => string }> = {
+  refund: { typeCode: '04', noun: 'refund note', prefix: 'RN', csv: 'refunds CSV', line: (r) => `Refund of receipt ${r}` },
+  credit: { typeCode: '02', noun: 'credit note', prefix: 'CN', csv: 'credits CSV', line: (r) => `Credit for receipt ${r}` },
+};
+
 export interface RefundNoteOptions {
+  /** Default refund (type 04); credit builds a Credit Note (type 02). */
+  kind?: NoteKind;
   /** "YYYY-MM": the month of the consolidated e-Invoice being refunded against; refunded receipts must fall in it. */
   month: string;
   /** Internal ID and MyInvois UUID of the validated consolidated e-Invoice. */
   original: OriginalReference;
   /** The original document itself, when available: enables the supplier, period and amount checks. */
   originalDocument?: OriginalDocument;
-  /** Refund note ID, default `RN-<original ID>`. */
+  /** Note ID, default `RN-<original ID>` (refund) or `CN-<original ID>` (credit). */
   id?: string;
   issuedAt: Date;
   format?: DocumentFormat;
@@ -38,6 +52,9 @@ export interface RefundNoteOptions {
 }
 
 export interface RefundNoteResult {
+  kind: NoteKind;
+  /** e-Invoice type code: 04 Refund Note or 02 Credit Note. */
+  typeCode: AdjustmentType;
   id: string;
   month: string;
   format: DocumentFormat;
@@ -118,7 +135,7 @@ export function parseOriginal(jsonText: string): OriginalDocument {
     throw new InputError('original document is missing ID, supplier TIN, InvoicePeriod or PayableAmount.');
   }
   if (type !== '01') {
-    throw new InputError(`original document has InvoiceTypeCode ${type ?? '(none)'}; a refund note must refer to an Invoice (01).`);
+    throw new InputError(`original document has InvoiceTypeCode ${type ?? '(none)'}; a refund or credit note must refer to an Invoice (01).`);
   }
   if (currency !== 'MYR') {
     throw new InputError(`original document currency is ${currency ?? '(none)'}; only MYR is supported.`);
@@ -127,14 +144,17 @@ export function parseOriginal(jsonText: string): OriginalDocument {
 }
 
 /**
- * Builds one unsigned Refund Note (type 04, v1.0) against a validated consolidated e-Invoice, for receipts refunded
- * after that e-Invoice was submitted. Buyer stays "General Public"; one line per refunded receipt.
+ * Builds one unsigned Refund Note (type 04, v1.0), or with `kind: 'credit'` one Credit Note (type 02, v1.0), against a
+ * validated consolidated e-Invoice, for receipts refunded or reduced after that e-Invoice was submitted. Buyer stays
+ * "General Public"; one line per receipt.
  */
 export function refundNote(refunds: readonly Receipt[], supplier: Supplier, options: RefundNoteOptions): RefundNoteResult {
   const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(options.month);
   if (!match) {
     throw new InputError(`month "${options.month}" must be YYYY-MM.`);
   }
+  const kind = options.kind ?? 'refund';
+  const k = KINDS[kind];
   const { original } = options;
   if (original.id.trim() === '' || original.id.length > ID_MAX) {
     throw new InputError(`original e-Invoice ID must be 1 to ${ID_MAX} characters.`);
@@ -142,12 +162,12 @@ export function refundNote(refunds: readonly Receipt[], supplier: Supplier, opti
   if (!/^[A-Za-z0-9]{1,26}$/.test(original.uuid)) {
     throw new InputError(`original e-Invoice UUID must be 1 to ${UUID_MAX} letters or digits (the UUID MyInvois returned on validation).`);
   }
-  const id = options.id ?? `RN-${original.id}`;
+  const id = options.id ?? `${k.prefix}-${original.id}`;
   if (id.trim() === '' || id.length > ID_MAX) {
-    throw new InputError(`refund note ID "${id}" must be 1 to ${ID_MAX} characters; pass a shorter --id.`);
+    throw new InputError(`${k.noun} ID "${id}" must be 1 to ${ID_MAX} characters; pass a shorter --id.`);
   }
   if (id === original.id) {
-    throw new InputError('refund note ID must differ from the original e-Invoice ID.');
+    throw new InputError(`${k.noun} ID must differ from the original e-Invoice ID.`);
   }
   const format = options.format ?? 'json';
   const year = Number(match[1]);
@@ -158,14 +178,14 @@ export function refundNote(refunds: readonly Receipt[], supplier: Supplier, opti
   if (outside.length > 0) {
     const sample = outside.slice(0, 5).map((r) => `${r.receipt} (${r.date})`).join(', ');
     throw new InputError(
-      `${outside.length} refunded receipt(s) are outside ${options.month}, the month of the original e-Invoice: ${sample}` +
+      `${outside.length} receipt(s) in the ${k.csv} are outside ${options.month}, the month of the original e-Invoice: ${sample}` +
         `${outside.length > 5 ? ` and ${outside.length - 5} more` : ''}. The date column is the original receipt date.`,
     );
   }
   const exemptionReason = exemptionReasonOf(refunds);
   const lines = buildLines(refunds, 'receipt');
   for (const line of lines) {
-    line.description = `Refund of receipt ${line.receipts[0]}`;
+    line.description = k.line(line.receipts[0]);
   }
 
   const byType = new Map<string, TaxPart>();
@@ -179,7 +199,7 @@ export function refundNote(refunds: readonly Receipt[], supplier: Supplier, opti
   }
   const sum = sumParts(byType);
   if (sum.subtotal + sum.tax === 0n) {
-    throw new InputError('refunds add up to RM0.00; nothing to refund.');
+    throw new InputError(`the ${k.csv} adds up to RM0.00; nothing to put in a ${k.noun}.`);
   }
 
   const origDoc = options.originalDocument;
@@ -195,7 +215,7 @@ export function refundNote(refunds: readonly Receipt[], supplier: Supplier, opti
     }
     if (sum.subtotal + sum.tax > origDoc.payable) {
       throw new InputError(
-        `refund total RM${formatMoney(sum.subtotal + sum.tax)} is more than the original e-Invoice payable amount RM${formatMoney(origDoc.payable)}.`,
+        `${k.noun} total RM${formatMoney(sum.subtotal + sum.tax)} is more than the original e-Invoice payable amount RM${formatMoney(origDoc.payable)}.`,
       );
     }
   }
@@ -205,19 +225,21 @@ export function refundNote(refunds: readonly Receipt[], supplier: Supplier, opti
   const warnings: string[] = [];
   // Malaysia is UTC+8 with no daylight saving time: the month is over at 00:00 MYT on the 1st of the next month.
   if (options.issuedAt.getTime() < Date.UTC(year, month, 1) - 8 * 3600 * 1000) {
-    warnings.push(`Issue time is before ${options.month} is over (Malaysia time); a refund note follows the submitted consolidated e-Invoice.`);
+    warnings.push(`Issue time is before ${options.month} is over (Malaysia time); a ${k.noun} follows the submitted consolidated e-Invoice.`);
   }
   if (origDoc === undefined) {
     warnings.push('Not checked against the original document (pass --original FILE.json to check supplier, period and amount).');
   }
-  const json = documentJson({ id, issueDate, issueTime, periodStart, periodEnd }, supplier, lines, exemptionReason, original);
+  const json = documentJson({ id, issueDate, issueTime, periodStart, periodEnd }, supplier, lines, exemptionReason, original, k.typeCode);
   const body = format === 'xml' ? ublJsonToXml(json) : JSON.stringify(json);
   const bytes = Buffer.byteLength(body, 'utf8');
   const limit = options.documentBytes ?? LIMITS.documentBytes;
   if (bytes > limit) {
-    throw new InputError(`refund note is ${bytes} bytes, over the ${limit}-byte document limit; split the refunds CSV into several runs with different --id.`);
+    throw new InputError(`${k.noun} is ${bytes} bytes, over the ${limit}-byte document limit; split the ${k.csv} into several runs with different --id.`);
   }
   return {
+    kind,
+    typeCode: k.typeCode,
     id,
     month: options.month,
     format,
@@ -249,18 +271,19 @@ export function refundSummaryJson(result: RefundNoteResult): Record<string, unkn
 
 export function refundTextReport(result: RefundNoteResult, outDir?: string): string {
   const out: string[] = [];
-  out.push(`Refund note ${result.id} against consolidated e-Invoice ${result.original.id} (UUID ${result.original.uuid}, ${result.month})`);
-  out.push(`Refunded receipts: ${result.receipts}, lines: ${result.lines}, ${result.bytes} bytes`);
+  const k = KINDS[result.kind];
+  out.push(`${k.noun[0].toUpperCase()}${k.noun.slice(1)} ${result.id} (type ${result.typeCode}) against consolidated e-Invoice ${result.original.id} (UUID ${result.original.uuid}, ${result.month})`);
+  out.push(`Receipts: ${result.receipts}, lines: ${result.lines}, ${result.bytes} bytes`);
   for (const t of result.byTaxType) {
     const reason = t.taxType === 'E' && result.exemptionReason !== undefined ? ` (exemption reason: ${result.exemptionReason})` : '';
     out.push(`  tax type ${t.taxType}: RM${t.subtotal} + tax RM${t.tax}${reason}`);
   }
-  out.push(`Refund total: RM${result.totals.subtotal} + tax RM${result.totals.tax} = RM${result.totals.total}`);
+  out.push(`${result.kind === 'credit' ? 'Credit' : 'Refund'} total: RM${result.totals.subtotal} + tax RM${result.totals.tax} = RM${result.totals.total}`);
   out.push(`Issue: ${result.issueDate} ${result.issueTime}.${result.checkedAgainstOriginal ? ' Checked against the original document.' : ''}`);
   for (const warning of result.warnings) {
     out.push(`Warning: ${warning}`);
   }
-  out.push(outDir === undefined ? 'Dry run: pass --out DIR to write the refund note.' : `Wrote ${result.id}.${result.format} to ${outDir}.`);
-  out.push(`The refund note is unsigned v1.0 ${result.format.toUpperCase()} and is not submitted. Check it (e.g. with myinvois-precheck) before submitting.`);
+  out.push(outDir === undefined ? `Dry run: pass --out DIR to write the ${k.noun}.` : `Wrote ${result.id}.${result.format} to ${outDir}.`);
+  out.push(`The ${k.noun} is unsigned v1.0 ${result.format.toUpperCase()} and is not submitted. Check it (e.g. with myinvois-precheck) before submitting.`);
   return `${out.join('\n')}\n`;
 }
