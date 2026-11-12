@@ -54,12 +54,28 @@ describe('cli', () => {
     expect(readdirSync(dir).sort()).toEqual(['CONS-202610-KL1-001.json', 'CONS-202610-PG1-001.json', 'summary.json']);
     const summary = JSON.parse(readFileSync(join(dir, 'summary.json'), 'utf8'));
     expect(summary.documents[0]).not.toHaveProperty('json');
+    expect(summary.documents[0]).not.toHaveProperty('body');
+    expect(summary.format).toBe('json');
     expect(summary.documents[0].file).toBe('CONS-202610-KL1-001.json');
     const doc = JSON.parse(readFileSync(join(dir, 'CONS-202610-KL1-001.json'), 'utf8'));
     expect(doc.Invoice[0].IssueTime[0]._).toBe('01:00:00Z');
     const io = capture();
     expect(main([...args, '--by-branch', '--out', dir])).toBe(2);
     expect(io.err()).toMatch(/refusing to overwrite/);
+  });
+  it('--format xml writes <ID>.xml documents', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cons-'));
+    const io = capture();
+    expect(main([...args, '--format', 'xml', '--out', dir])).toBe(0);
+    expect(readdirSync(dir).sort()).toEqual(['CONS-202610-001.xml', 'summary.json']);
+    const summary = JSON.parse(readFileSync(join(dir, 'summary.json'), 'utf8'));
+    expect(summary.format).toBe('xml');
+    expect(summary.documents[0]).not.toHaveProperty('body');
+    expect(summary.documents[0].file).toBe('CONS-202610-001.xml');
+    const xml = readFileSync(join(dir, 'CONS-202610-001.xml'), 'utf8');
+    expect(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns=')).toBe(true);
+    expect(Buffer.byteLength(xml)).toBe(summary.documents[0].bytes + 1); // trailing newline
+    expect(io.out()).toContain('unsigned v1.0 XML');
   });
   it('--json prints the summary', () => {
     const io = capture();
@@ -76,6 +92,7 @@ describe('cli', () => {
       [['build', csvPath], /--supplier and --month are required/],
       [['nope'], /expected: build/],
       [[...args, '--method', 'x'], /--method must be/],
+      [[...args, '--format', 'yaml'], /--format must be json or xml/],
       [['build', csvPath, '--supplier', supplierPath, '--month', '2026-10', '--issued-at', '2026-11-03T09:00'], /time zone/],
       [['build', join(dir, 'missing.csv'), '--supplier', supplierPath, '--month', '2026-10'], /cannot read receipts CSV/],
       [['build', csvPath, '--supplier', badJson, '--month', '2026-10'], /not valid JSON/],

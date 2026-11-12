@@ -41,7 +41,8 @@ node dist/cli.js build receipts.csv --supplier supplier.json --month 2026-10 --b
 | `--by-branch` | One document series per `branch` value. |
 | `--prefix TEXT` | Document ID prefix, default `CONS` (IDs: `CONS-202610-001`, `CONS-202610-PG1-001`). |
 | `--issued-at ISO` | Issue time with a zone, default now. Written as UTC `IssueDate` / `IssueTime`. MyInvois expects submission soon after the issue time, so build right before submitting. |
-| `--out DIR` | Write `<ID>.json` per document and `summary.json`. Never overwrites. Without it the run is a dry run. |
+| `--format json\|xml` | Document encoding, default `json`. `xml` writes the same UBL 2.1 Invoice as XML (`cac`/`cbc` namespaces, elements in UBL schema order). The 300 KB document limit and the batch limits are measured on the chosen encoding, so XML may split into more documents. |
+| `--out DIR` | Write `<ID>.json` (or `<ID>.xml`) per document and `summary.json`. Never overwrites. Without it the run is a dry run. |
 | `--json` | Print the summary as JSON. |
 
 Exit codes: `0` ok, `1` documents do not reconcile with the receipts, `2` input error.
@@ -70,7 +71,7 @@ per tax type.
 ## Limits of this version
 
 - A receipt can have one exemption reason (one type `E` row).
-- Output is version `1.0` and **unsigned**. Signing (version `1.1`) and submission are out of scope.
+- Output (JSON or XML) is version `1.0` and **unsigned**. Signing (version `1.1`) and submission are out of scope.
 - MYR only.
 - Supplier fields get basic checks only. Run a full pre-submission checker on the output.
 

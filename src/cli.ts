@@ -7,13 +7,13 @@ import { consolidate } from './consolidate.js';
 import { InputError } from './errors.js';
 import type { Method } from './lines.js';
 import { parseReceipts } from './receipts.js';
-import { summaryJson, textReport } from './report.js';
+import { documentFile, summaryJson, textReport } from './report.js';
 import { parseSupplier } from './supplier.js';
 
 const USAGE = `Usage: myinvois-consolidate build <receipts.csv> --supplier <supplier.json> --month YYYY-MM [options]
 
 Builds monthly consolidated e-Invoices (buyer "General Public", TIN EI00000000010, classification 004)
-from B2C receipts, as unsigned MyInvois UBL 2.1 JSON (v1.0). Offline; never submits anything.
+from B2C receipts, as unsigned MyInvois UBL 2.1 JSON or XML (v1.0). Offline; never submits anything.
 
 Options:
   --supplier <file>     supplier JSON (name, tin, brn, msic, msicDescription, addressLines, city, postcode, state, phone, ...)
@@ -22,7 +22,8 @@ Options:
   --by-branch           one document series per value of the CSV "branch" column
   --prefix <text>       document ID prefix (default CONS), IDs look like CONS-202610-001
   --issued-at <iso>     issue time (default now), e.g. 2026-11-03T09:00:00+08:00
-  --out <dir>           write <ID>.json per document and summary.json (refuses to overwrite)
+  --format json|xml     document encoding (default json); size limits are measured on it
+  --out <dir>           write <ID>.json or <ID>.xml per document and summary.json (refuses to overwrite)
   --json                print the summary as JSON
   -h, --help            show this help
 
@@ -43,6 +44,7 @@ export function main(argv: string[]): number {
         'by-branch': { type: 'boolean', default: false },
         prefix: { type: 'string' },
         'issued-at': { type: 'string' },
+        format: { type: 'string', default: 'json' },
         out: { type: 'string' },
         json: { type: 'boolean', default: false },
         help: { type: 'boolean', short: 'h', default: false },
@@ -66,6 +68,9 @@ export function main(argv: string[]): number {
     if (values.method !== 'chain' && values.method !== 'receipt') {
       throw new InputError('--method must be chain or receipt.');
     }
+    if (values.format !== 'json' && values.format !== 'xml') {
+      throw new InputError('--format must be json or xml.');
+    }
     const issuedAt = values['issued-at'] === undefined ? new Date() : new Date(values['issued-at']);
     if (values['issued-at'] !== undefined && !/(Z|[+-]\d{2}:\d{2})$/.test(values['issued-at'])) {
       throw new InputError('--issued-at needs a time zone, e.g. 2026-11-03T09:00:00+08:00 or ...Z.');
@@ -86,6 +91,7 @@ export function main(argv: string[]): number {
       byBranch: values['by-branch'],
       idPrefix: values.prefix,
       issuedAt,
+      format: values.format,
     });
     if (!result.reconciled) {
       process.stdout.write(values.json ? `${JSON.stringify(summaryJson(result), null, 2)}\n` : textReport(result));
@@ -93,14 +99,14 @@ export function main(argv: string[]): number {
       return 1;
     }
     if (values.out !== undefined) {
-      const files = [...result.documents.map((d) => `${d.id}.json`), 'summary.json'].map((f) => join(values.out as string, f));
+      const files = [...result.documents.map((d) => documentFile(d.id, result.format)), 'summary.json'].map((f) => join(values.out as string, f));
       const existing = files.filter((f) => existsSync(f));
       if (existing.length > 0) {
         throw new InputError(`refusing to overwrite ${existing[0]}${existing.length > 1 ? ` and ${existing.length - 1} more` : ''}.`);
       }
       mkdirSync(values.out, { recursive: true });
       for (const doc of result.documents) {
-        writeFileSync(join(values.out, `${doc.id}.json`), `${JSON.stringify(doc.json)}\n`, { flag: 'wx' });
+        writeFileSync(join(values.out, documentFile(doc.id, result.format)), `${doc.body}\n`, { flag: 'wx' });
       }
       writeFileSync(join(values.out, 'summary.json'), `${JSON.stringify(summaryJson(result), null, 2)}\n`, { flag: 'wx' });
     }

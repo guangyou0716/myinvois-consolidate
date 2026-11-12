@@ -51,4 +51,23 @@ for (const file of readdirSync(out).filter((f) => f.startsWith('CONS-'))) {
   }
 }
 console.log(`smoke: ok big month 6000 receipts -> ${summary.documents.length} documents, RM${summary.totalsFromDocuments.total}`);
-console.log(`smoke: files in ${out}`);
+
+// Same busy month as XML: larger encoding, so more documents, each still under the limit.
+const outXml = join(dir, 'out-xml');
+const xmlSummary = JSON.parse(
+  execFileSync(process.execPath, [cli, 'build', big, ...common, '--method', 'receipt', '--format', 'xml', '--out', outXml], { encoding: 'utf8' }),
+);
+if (!xmlSummary.reconciled || xmlSummary.totalsFromDocuments.total !== '79980.00' || xmlSummary.documents.length <= summary.documents.length) {
+  fail(`big month xml: ${xmlSummary.documents.length} documents, ${JSON.stringify(xmlSummary.totalsFromDocuments)}`);
+}
+const xmlFiles = readdirSync(outXml).filter((f) => f.startsWith('CONS-'));
+if (xmlFiles.length !== xmlSummary.documents.length || !xmlFiles.every((f) => f.endsWith('.xml'))) {
+  fail(`big month xml files: ${xmlFiles.join(', ')}`);
+}
+for (const file of xmlFiles) {
+  if (statSync(join(outXml, file)).size > 300_001) {
+    fail(`${file} is over 300000 bytes`);
+  }
+}
+console.log(`smoke: ok big month as XML -> ${xmlSummary.documents.length} documents, RM${xmlSummary.totalsFromDocuments.total}`);
+console.log(`smoke: files in ${out} and ${outXml}`);

@@ -57,8 +57,9 @@ export function lineJson(line: ConsolidatedLine, index: number, exemptionReason?
     TaxTotal: taxTotal(line.parts, exemptionReason),
     Item: [
       {
-        CommodityClassification: [{ ItemClassificationCode: v(CONSOLIDATED_CLASSIFICATION, { listID: 'CLASS' }) }],
+        // UBL schema order (Description before CommodityClassification) so the XML encoding is valid too.
         Description: v(line.description),
+        CommodityClassification: [{ ItemClassificationCode: v(CONSOLIDATED_CLASSIFICATION, { listID: 'CLASS' }) }],
       },
     ],
     Price: [{ PriceAmount: myr(subtotal) }],
