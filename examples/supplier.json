@@ -1,0 +1,16 @@
+{
+  "name": "Example Kedai Sdn Bhd",
+  "tin": "C1234567890",
+  "brn": "202001234567",
+  "sst": "NA",
+  "ttx": "NA",
+  "msic": "47114",
+  "msicDescription": "Convenience stores",
+  "addressLines": ["No. 1, Jalan Contoh", "Taman Contoh"],
+  "city": "Simpang Ampat",
+  "postcode": "14100",
+  "state": "07",
+  "country": "MYS",
+  "phone": "+60123456789",
+  "email": "accounts@example.com"
+}
