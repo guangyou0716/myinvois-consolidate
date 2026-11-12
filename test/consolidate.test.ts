@@ -76,6 +76,58 @@ describe('consolidate', () => {
     expect(invoice.TaxTotal[0].TaxSubtotal[0].TaxCategory[0]).not.toHaveProperty('TaxExemptionReason');
   });
 
+  it('puts each exemption reason in its own document series and reconciles', () => {
+    const g = 'Exempted goods, example reference EXM-2026-001 (synthetic)';
+    const sv = 'Exempted services, example reference EXM-2026-002 (synthetic)';
+    const receipts = parseReceipts(example('receipts-2026-10-exempt-multi.csv'));
+    const result = consolidate(receipts, supplier(), { month: '2026-10', method: 'chain', issuedAt: NOV_3 });
+    expect(result.exemptionReasons).toEqual([g, sv]);
+    expect(result).not.toHaveProperty('exemptionReason');
+    expect(result.documents.map((d) => d.id)).toEqual(['CONS-202610-001', 'CONS-202610-E1-001', 'CONS-202610-E2-001']);
+    expect(result.documents.map((d) => d.exemptionReason)).toEqual([undefined, g, sv]);
+    expect(result.documents.map((d) => d.receipts)).toEqual([2, 2, 2]);
+    expect(result.byExemptionReason).toEqual([
+      { exemptionReason: g, subtotal: '28.00', tax: '0.00', total: '28.00' },
+      { exemptionReason: sv, subtotal: '30.50', tax: '0.00', total: '30.50' },
+    ]);
+    expect(result.totalsFromDocuments).toEqual({ subtotal: '140.50', tax: '5.60', total: '146.10' });
+    expect(result.reconciled).toBe(true);
+    // every E subtotal in a document carries that document's reason; the plain series has no E and no reason
+    for (const doc of result.documents) {
+      const text = JSON.stringify(doc.json);
+      expect(text.includes('TaxExemptionReason')).toBe(doc.exemptionReason !== undefined);
+      if (doc.exemptionReason !== undefined) {
+        expect(text).toContain(doc.exemptionReason);
+        expect(text).not.toContain(doc.exemptionReason === g ? sv : g);
+      }
+    }
+    // M-0001 has a 02 part and an E part: the whole receipt goes to E1, so its 02 part sits in the E1 document
+    const e1 = inv(result.documents[1]);
+    expect(e1.InvoiceLine[0].Item[0].Description[0]._).toBe('Receipt M-0001');
+    expect(e1.TaxTotal[0].TaxSubtotal.map((x: { TaxCategory: { ID: { _: string }[] }[] }) => x.TaxCategory[0].ID[0]._)).toEqual(['02', 'E']);
+  });
+
+  it('combines --by-branch with several exemption reasons', () => {
+    const receipts = parseReceipts(example('receipts-2026-10-exempt-multi.csv'));
+    const result = consolidate(receipts, supplier(), { month: '2026-10', method: 'receipt', byBranch: true, issuedAt: NOV_3 });
+    expect(result.documents.map((d) => d.id)).toEqual([
+      'CONS-202610-KL1-001',
+      'CONS-202610-KL1-E2-001',
+      'CONS-202610-PG1-001',
+      'CONS-202610-PG1-E1-001',
+      'CONS-202610-PG1-E2-001',
+    ]);
+    expect(result.reconciled).toBe(true);
+    expect(result.documents.reduce((n, d) => n + d.receipts, 0)).toBe(6);
+  });
+
+  it('keeps one series when all type E receipts share a reason', () => {
+    const result = consolidate(parseReceipts(example('receipts-2026-10-exempt.csv')), supplier(), { month: '2026-10', method: 'chain', issuedAt: NOV_3 });
+    expect(result.documents.map((d) => d.id)).toEqual(['CONS-202610-001']);
+    expect(result.exemptionReasons).toHaveLength(1);
+    expect(result.documents[0].exemptionReason).toBe(result.exemptionReason);
+  });
+
   it('receipt method lists every receipt, by-branch gives one series per branch', () => {
     const result = consolidate(october(), supplier(), { month: '2026-10', method: 'receipt', byBranch: true, issuedAt: NOV_3 });
     expect(result.documents.map((d) => d.id)).toEqual(['CONS-202610-KL1-001', 'CONS-202610-PG1-001']);

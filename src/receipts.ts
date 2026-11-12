@@ -52,8 +52,8 @@ export function isRealDate(text: string): boolean {
 /**
  * Parses a receipts CSV. Header (any order, case-insensitive): receipt, date, subtotal, tax_type, tax, and
  * optionally branch and exemption_reason. A receipt with several tax types has one row per tax type; the rows must
- * share date and branch. Tax type E rows need tax 0 and an exemption reason; every E row in the file must give the
- * same reason, because each consolidated document carries one TaxExemptionReason for type E.
+ * share date and branch. Tax type E rows need tax 0 and an exemption reason. Receipts may give different reasons;
+ * consolidate() then puts each reason in its own document series, because a document carries one TaxExemptionReason.
  */
 export function parseReceipts(text: string): Receipt[] {
   const rows = parseCsv(text);
@@ -74,7 +74,6 @@ export function parseReceipts(text: string): Receipt[] {
   }
   const branchAt = index.get('branch');
   const reasonAt = index.get('exemption_reason');
-  let firstReason: { reason: string; row: number } | undefined;
   const byNumber = new Map<string, Receipt>();
   const order: Receipt[] = [];
 
@@ -114,14 +113,6 @@ export function parseReceipts(text: string): Receipt[] {
       if (reason.length > EXEMPTION_REASON_MAX || /[\r\n]/.test(reason)) {
         throw new InputError(`${where}: exemption_reason must be one line of at most ${EXEMPTION_REASON_MAX} characters.`);
       }
-      if (firstReason === undefined) {
-        firstReason = { reason, row: r };
-      } else if (firstReason.reason !== reason) {
-        throw new InputError(
-          `${where}: exemption_reason differs from data row ${firstReason.row}; one run supports one reason for tax type E ` +
-            '(split the receipts into separate runs with different --prefix values).',
-        );
-      }
     } else if (reason !== '') {
       throw new InputError(`${where}: exemption_reason is only allowed on tax type E rows.`);
     }
@@ -152,6 +143,33 @@ export function parseReceipts(text: string): Receipt[] {
     throw new InputError('receipts CSV has a header but no receipts.');
   }
   return order;
+}
+
+/**
+ * The distinct exemption reasons of the tax type E receipts, in order of first appearance (empty when none has type
+ * E). Throws when an E part has no valid reason (possible for receipts built in code rather than by parseReceipts).
+ */
+export function exemptionReasonsOf(receipts: readonly Receipt[]): string[] {
+  const found: string[] = [];
+  for (const receipt of receipts) {
+    const reason = validReasonOf(receipt);
+    if (reason !== undefined && !found.includes(reason)) {
+      found.push(reason);
+    }
+  }
+  return found;
+}
+
+/** The trimmed exemption reason of a receipt with tax type E, or undefined without E. Throws when it is not valid. */
+export function validReasonOf(receipt: Receipt): string | undefined {
+  if (!receipt.parts.has('E')) {
+    return undefined;
+  }
+  const reason = receipt.exemptionReason?.trim() ?? '';
+  if (reason === '' || reason.length > EXEMPTION_REASON_MAX || /[\r\n]/.test(reason)) {
+    throw new InputError(`receipt ${receipt.receipt} has tax type E but no valid exemption reason.`);
+  }
+  return reason;
 }
 
 /**
