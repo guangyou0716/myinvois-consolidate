@@ -1,12 +1,13 @@
 export { consolidate, LIMITS } from './consolidate.js';
-export type { ConsolidateOptions, Limits, ConsolidateResult, DocumentResult, Totals } from './consolidate.js';
+export type { ConsolidateOptions, DocumentFormat, Limits, ConsolidateResult, DocumentResult, Totals } from './consolidate.js';
 export { InputError } from './errors.js';
 export { buildLines, compareReceipts, follows, splitReceiptNumber } from './lines.js';
 export type { ConsolidatedLine, Method } from './lines.js';
 export { formatMoney, moneyNumber, parseMoney } from './money.js';
 export { EXEMPTION_REASON_MAX, exemptionReasonOf, exemptionReasonsOf, parseReceipts, TAX_TYPES } from './receipts.js';
 export type { Receipt, TaxPart } from './receipts.js';
-export { summaryJson, textReport } from './report.js';
+export { documentFile, summaryJson, textReport } from './report.js';
 export { parseSupplier } from './supplier.js';
 export type { Supplier } from './supplier.js';
 export { CONSOLIDATED_CLASSIFICATION, documentJson, GENERAL_PUBLIC_TIN } from './ubl.js';
+export { elementXml, UBL_NAMESPACES, ublJsonToXml } from './xml.js';

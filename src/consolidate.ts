@@ -4,6 +4,7 @@ import { formatMoney } from './money.js';
 import { exemptionReasonsOf, validReasonOf, type Receipt, type TaxPart } from './receipts.js';
 import type { Supplier } from './supplier.js';
 import { documentJson, lineJson, sumParts } from './ubl.js';
+import { elementXml, ublJsonToXml } from './xml.js';
 
 /** MyInvois limits from the IRBM e-Invoice Specific Guideline 3.6.4: 300 KB per document, 100 documents and 5 MB per submission. */
 export interface Limits {
@@ -20,6 +21,9 @@ const SUBMISSION_ENVELOPE_BYTES = 200;
 /** Room left for document-level totals growing as lines are added. */
 const ESTIMATE_MARGIN_BYTES = 2048;
 
+/** Document encoding: MyInvois accepts UBL 2.1 as JSON or XML. */
+export type DocumentFormat = 'json' | 'xml';
+
 export interface ConsolidateOptions {
   /** "YYYY-MM": the month whose receipts are consolidated. */
   month: string;
@@ -30,6 +34,8 @@ export interface ConsolidateOptions {
   idPrefix?: string;
   /** Issue instant written into IssueDate / IssueTime (UTC). */
   issuedAt: Date;
+  /** Encoding of the documents (default json); sizes and splitting are measured on this encoding. */
+  format?: DocumentFormat;
   /** Override limits (tests use small ones). */
   limits?: Partial<Limits>;
 }
@@ -46,8 +52,11 @@ export interface DocumentResult {
   subtotal: string;
   tax: string;
   total: string;
+  /** UTF-8 size of `body`. */
   bytes: number;
   json: Record<string, unknown>;
+  /** The encoded document exactly as it should be written / submitted (JSON or XML, per `format`). */
+  body: string;
 }
 
 export interface Totals {
@@ -60,6 +69,7 @@ export interface ConsolidateResult {
   month: string;
   method: Method;
   byBranch: boolean;
+  format: DocumentFormat;
   receipts: number;
   lines: number;
   periodStart: string;
@@ -94,9 +104,7 @@ function totals(subtotal: bigint, tax: bigint): Totals {
   return { subtotal: formatMoney(subtotal), tax: formatMoney(tax), total: formatMoney(subtotal + tax) };
 }
 
-function bytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), 'utf8');
-}
+const utf8 = (text: string) => Buffer.byteLength(text, 'utf8');
 
 export function consolidate(receipts: readonly Receipt[], supplier: Supplier, options: ConsolidateOptions): ConsolidateResult {
   const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(options.month);
@@ -111,6 +119,12 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
     throw new InputError('issue time is not a valid date.');
   }
   const limits = { ...LIMITS, ...options.limits };
+  const format = options.format ?? 'json';
+  if (format !== 'json' && format !== 'xml') {
+    throw new InputError('format must be json or xml.');
+  }
+  const encode = (doc: Record<string, unknown>) => (format === 'xml' ? ublJsonToXml(doc) : JSON.stringify(doc));
+  const lineBytesOf = (line: Record<string, unknown>) => utf8(format === 'xml' ? elementXml('InvoiceLine', [line]) : JSON.stringify(line));
   const year = Number(match[1]);
   const month = Number(match[2]);
   const periodStart = ymd(new Date(Date.UTC(year, month - 1, 1)));
@@ -176,11 +190,11 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
       periodStart,
       periodEnd,
     });
-    const base = bytes(documentJson(header(999), supplier, [], exemptionReason)) + ESTIMATE_MARGIN_BYTES;
+    const base = utf8(encode(documentJson(header(999), supplier, [], exemptionReason))) + ESTIMATE_MARGIN_BYTES;
     let current: ConsolidatedLine[] = [];
     let size = base;
     for (const line of lines) {
-      const lineBytes = bytes(lineJson(line, 99_999, exemptionReason)) + 1;
+      const lineBytes = lineBytesOf(lineJson(line, 99_999, exemptionReason)) + 1;
       if (base + lineBytes > limits.documentBytes) {
         throw new InputError(`line "${line.description}" alone does not fit in a ${limits.documentBytes}-byte document.`);
       }
@@ -197,7 +211,8 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
     chunks.forEach((chunk, i) => {
       const h = header(i + 1);
       const json = documentJson(h, supplier, chunk, exemptionReason);
-      const docBytes = bytes(json);
+      const body = encode(json);
+      const docBytes = utf8(body);
       if (docBytes > limits.documentBytes) {
         throw new Error(`internal: ${h.id} is ${docBytes} bytes, over the ${limits.documentBytes}-byte limit.`);
       }
@@ -228,6 +243,7 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
         ...totals(sum.subtotal, sum.tax),
         bytes: docBytes,
         json,
+        body,
       });
     });
   }
@@ -272,6 +288,7 @@ export function consolidate(receipts: readonly Receipt[], supplier: Supplier, op
     month: options.month,
     method: options.method,
     byBranch: options.byBranch ?? false,
+    format,
     receipts: receipts.length,
     lines: lineCount,
     periodStart,
